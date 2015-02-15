@@ -358,16 +358,24 @@ process_beam_lastmod(undefined, _Other, _, _) ->
 fire_onsync(Modules) ->
     case sync_options:get_onsync() of
         undefined -> ok;
-        Funs when is_list(Funs) -> onsync_apply_list(Funs, Modules);
-        Fun -> onsync_apply(Fun, Modules)
+        Funs when is_list(Funs) -> event_apply_list(Funs, Modules);
+        Fun -> event_apply(Fun, Modules)
     end.
 
-onsync_apply_list(Funs, Modules) ->
-    [onsync_apply(Fun, Modules) || Fun <- Funs].
+fire_onnew(Modules) ->
+    case sync_options:get_onnew() of
+        undefined -> ok;
+        Funs when is_list(Funs) -> event_apply_list(Funs, Modules);
+        Fun -> event_apply(Fun, Modules)
+    end.
 
-onsync_apply({M, F}, Modules) ->
+
+event_apply_list(Funs, Modules) ->
+    [event_apply(Fun, Modules) || Fun <- Funs].
+
+event_apply({M, F}, Modules) ->
     erlang:apply(M, F, [Modules]);
-onsync_apply(Fun, Modules) when is_function(Fun) ->
+event_apply(Fun, Modules) when is_function(Fun) ->
     Fun(Modules).
 
 get_nodes() ->
@@ -445,7 +453,13 @@ maybe_recompile_src_file(File, LastMod, EnablePatching) ->
             end;
         _ ->
             %% File is new, recompile...
-            recompile_src_file(File, EnablePatching)
+            case recompile_src_file(File, EnablePatching) of
+                {ok, Module, [], _Warnings} ->
+                    fire_onnew([Module]);
+                {ok, _Module, _Errors, _Warnings} ->
+                    ok %% <sad face picture>
+            end,
+            ok
     end.
 
 determine_compile_fun_and_module_name(SrcFile) ->
@@ -478,7 +492,7 @@ recompile_src_file(SrcFile, _EnablePatching) ->
                 {ok, Module, OldBinary, Warnings} ->
                     %% Compiling didn't change the beam code. Don't reload...
                     print_results(Module, SrcFile, [], Warnings),
-                    {ok, [], Warnings};
+                    {ok, Module, [], Warnings};
 
                 {ok, Module, _Binary, Warnings} ->
                     %% Compiling changed the beam code. Compile and reload.
@@ -496,19 +510,19 @@ recompile_src_file(SrcFile, _EnablePatching) ->
 
                     %% Print the warnings...
                     print_results(Module, SrcFile, [], Warnings),
-                    {ok, [], Warnings};
+                    {ok, Module, [], Warnings};
 
                 {ok, OtherModule, _Binary, Warnings} ->
                     Desc = io_lib:format("Module definition (~p) differs from expected (~s)", [OtherModule, filename:rootname(filename:basename(SrcFile))]),
                 
                     Errors = [{SrcFile, {0, Module, Desc}}],
                     print_results(Module, SrcFile, Errors, Warnings),
-                    {ok, Errors, Warnings};
+                    {ok, Module, Errors, Warnings};
     
                 {error, Errors, Warnings} ->
                     %% Compiling failed. Print the warnings and errors...
                     print_results(Module, SrcFile, Errors, Warnings),
-                    {ok, Errors, Warnings}
+                    {ok, Module, Errors, Warnings}
             end;
 
         undefined ->

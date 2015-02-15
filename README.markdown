@@ -264,10 +264,10 @@ development mode only, don't run it in production.
 
 ## Sync Post-hooks
 
-You can register a post-hook to run after Sync reloads modules. This can allow
-you to run tests on modules if you like, or anything else for that matter.
+You can register a post-hook to run after Sync reloads modules and after sync is compiled brand new module. 
+This can allow you to run tests on modules if you like, or anything else for that matter.
 
-You can register a post-hook with:
+You can register a post-hook fired after module is reloaded with:
 
 ```erlang
 sync:onsync(fun(Mods) ->
@@ -286,6 +286,14 @@ RunTests = fun(Mods) ->
 end,
 sync:onsync(RunTests).
 ```
+You can register a post-hook fired after new module is compiled with:
+
+```erlang
+sync:onnew(fun(Mods) ->
+				io:format("Here are brand new Modules!: ~p~n",[Mods]) 
+			end).
+```
+
 
 A post-hook can also be specified as a `{Module,Function}` tuple, which assumes
 `Module:Function/1`

@@ -16,7 +16,8 @@
     stop/0,
     growl/1,growl/0,
     log/1,log/0,
-    onsync/1,onsync/0
+    onsync/1,onsync/0,
+    onnew/1, onnew/0
 ]).
 
 %% Application Callbacks.
@@ -80,6 +81,12 @@ onsync(Fun) ->
 
 onsync() ->
     sync_options:get_onsync().
+
+onnew(Fun) ->
+    sync_options:set_onnew(Fun).
+
+onnew() ->
+    sync_options:get_onnew().
 
 %% ----------------------------------------------------------------------
 %% Application Callbacks
