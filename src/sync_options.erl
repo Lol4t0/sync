@@ -7,7 +7,9 @@
 -export([
     start_link/0,
     get_onsync/0,
+    get_onnew/0,
     set_onsync/1,
+    set_onnew/1,
     get_options/1,
     set_options/2
 ]).
@@ -25,8 +27,10 @@
 -define(SERVER, ?MODULE). 
 -define(PRINT(Var), io:format("DEBUG: ~p:~p - ~p~n~n ~p~n~n", [?MODULE, ?LINE, ??Var, Var])).
 
+-type event_fun() :: fun(([Module :: module()]) -> any()).
 -record(state, { 
-    onsync_fun,
+    onsync_fun :: event_fun() | [event_fun()],
+    onnew_fun :: event_fun() | [event_fun()],
     options_table
 }).
 
@@ -36,8 +40,14 @@ start_link() ->
 get_onsync() ->
     gen_server:call(?SERVER, get_onsync).
 
+get_onnew() ->
+    gen_server:call(?SERVER, get_onnew).
+
 set_onsync(Fun) ->
     gen_server:call(?SERVER, {set_onsync, Fun}).
+
+set_onnew(Fun) ->
+    gen_server:call(?SERVER, {set_onnew, Fun}).
 
 %% @private If options are not found for this directory, keep checking the
 %% parent directories for options
@@ -61,13 +71,20 @@ init([]) ->
 
 handle_call(get_onsync, _From, State) ->
     OnSync = State#state.onsync_fun,
-
     {reply, OnSync, State};
+
+handle_call(get_onnew, _From, State) ->
+    OnNew = State#state.onnew_fun,
+    {reply, OnNew, State};
 
 handle_call({set_onsync, Fun}, _From, State) ->
     State2 = State#state{
             onsync_fun = Fun},
+    {reply, ok, State2};
 
+handle_call({set_onnew, Fun}, _From, State) ->
+    State2 = State#state{
+        onnew_fun = Fun},
     {reply, ok, State2};
 
 handle_call({get_options, SrcDir}, _From, State) ->
