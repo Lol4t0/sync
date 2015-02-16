@@ -132,17 +132,20 @@ handle_cast(_, State) when State#state.paused==true ->
     %% If paused, just absorb the request and do nothing
     {noreply, State};
 handle_cast(discover_modules, State) ->
-    %% Get a list of all loaded non-system modules.
-    Modules = (erlang:loaded() -- sync_utils:get_system_modules()),
+    NewState = process_if_foregn_reload_enabled(
+        fun() ->
+            %% Get a list of all loaded non-system modules.
+            Modules = (erlang:loaded() -- sync_utils:get_system_modules()),
 
-    %% Delete excluded modules/applications
-    FilteredModules = filter_modules_to_scan(Modules),
+            %% Delete excluded modules/applications
+            FilteredModules = filter_modules_to_scan(Modules),
+            
+            %% Schedule the next interval...
+            NewTimers = schedule_cast(discover_modules, 30000, State#state.timers),
 
-    %% Schedule the next interval...
-    NewTimers = schedule_cast(discover_modules, 30000, State#state.timers),
-
-    %% Return with updated modules...
-    NewState = State#state { modules=FilteredModules, timers=NewTimers },
+            %% Return with updated modules...
+            State#state { modules=FilteredModules, timers=NewTimers }
+        end, State),
     {noreply, NewState};
 
 handle_cast(discover_src_dirs, State) ->
@@ -176,23 +179,26 @@ handle_cast(discover_src_files, State) ->
     {noreply, NewState};
 
 handle_cast(compare_beams, State) ->
-    %% Create a list of beam file lastmod times...
-    F = fun(X) ->
-        Beam = code:which(X),
-        LastMod = filelib:last_modified(Beam),
-        {X, LastMod}
-    end,
-    NewBeamLastMod = lists:usort([F(X) || X <- State#state.modules]),
-
-    %% Compare to previous results, if there are changes, then reload
-    %% the beam...
-    process_beam_lastmod(State#state.beam_lastmod, NewBeamLastMod, State#state.patching),
-
-    %% Schedule the next interval...
-    NewTimers = schedule_cast(compare_beams, 2000, State#state.timers),
-
-    %% Return with updated beam lastmod...
-    NewState = State#state { beam_lastmod=NewBeamLastMod, timers=NewTimers },
+    NewState = process_if_foregn_reload_enabled(
+        fun() ->
+            %% Create a list of beam file lastmod times...
+            F = fun(X) ->
+                Beam = code:which(X),
+                LastMod = filelib:last_modified(Beam),
+                {X, LastMod}
+            end,
+            NewBeamLastMod = lists:usort([F(X) || X <- State#state.modules]),
+        
+            %% Compare to previous results, if there are changes, then reload
+            %% the beam...
+            process_beam_lastmod(State#state.beam_lastmod, NewBeamLastMod, State#state.patching),
+        
+            %% Schedule the next interval...
+            NewTimers = schedule_cast(compare_beams, 2000, State#state.timers),
+        
+            %% Return with updated beam lastmod...
+            State#state { beam_lastmod=NewBeamLastMod, timers=NewTimers }
+        end, State),
     {noreply, NewState};
 
 handle_cast(compare_src_files, State) ->
@@ -243,6 +249,14 @@ handle_cast(enable_patching, State) ->
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
+
+process_if_foregn_reload_enabled(Fun, Fallback) ->
+    case application:get_env(sync, reload_foreign_beam_change, true) of
+        true ->
+            Fun();
+        _ ->
+            Fallback
+    end.
 
 dirs(DirsAndOpts) ->
     [begin 
