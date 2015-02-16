@@ -527,7 +527,8 @@ recompile_src_file(SrcFile, _EnablePatching) ->
                     {ok, Module, [], Warnings};
 
                 {ok, OtherModule, _Binary, Warnings} ->
-                    Desc = io_lib:format("Module definition (~p) differs from expected (~s)", [OtherModule, filename:rootname(filename:basename(SrcFile))]),
+                    Desc = io_lib:format("Module definition (~p) differs from expected (~s)", 
+                        [OtherModule, filename:rootname(filename:basename(SrcFile))]),
                 
                     Errors = [{SrcFile, {0, Module, Desc}}],
                     print_results(Module, SrcFile, Errors, Warnings),
@@ -549,9 +550,9 @@ print_results(Module, SrcFile, [], []) ->
     Msg = io_lib:format("~s:0: Recompiled.~n", [SrcFile]),
     case code:is_loaded(Module) of
         {file, _} ->
-            ok;
+            sync_notify:growl_success("Recompiled and reloaded" ++ SrcFile ++ ".");
         false ->
-            sync_notify:growl_success("Recompiled " ++ SrcFile ++ ".")
+            sync_notify:growl_success("Recompiled " ++ SrcFile ++ ".") %% TODO This never gonna executed
     end,
     sync_notify:log_success(lists:flatten(Msg));
 
