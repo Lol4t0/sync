@@ -80,12 +80,12 @@ handle_call(get_onnew, _From, State) ->
 handle_call({set_onsync, Fun}, _From, State) ->
     State2 = State#state{
             onsync_fun = Fun},
-    {reply, ok, State2};
+    {reply, {ok, self()}, State2};
 
 handle_call({set_onnew, Fun}, _From, State) ->
     State2 = State#state{
         onnew_fun = Fun},
-    {reply, ok, State2};
+    {reply, {ok, self()}, State2};
 
 handle_call({get_options, SrcDir}, _From, State) ->
     %% Look up the compile options for a SrcDir...
