@@ -110,6 +110,19 @@ For example
 ].
 ```
 
+## Disabling bream reload, if it was changed by the foreign application
+
+By default sync reloads beams that have been changed by foreign applications. You can set `reload_foreign_beam_change` to `false` to disable this behaviour. Then sync will compile files and reload beams that it has compiled, but will not reload beams that've changed due to foreign modifications
+
+To disable beam reload on foreign modifications add to your config file:
+```erlang
+[
+{sync, [
+        {reload_foreign_beam_change, false}
+    ]}
+}
+```
+
 ## Console Logging
 
 By default, sync will print sucess / warning / failure notifications to the
