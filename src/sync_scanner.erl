@@ -179,29 +179,26 @@ handle_cast(discover_src_files, State) ->
     {noreply, NewState};
 
 handle_cast(compare_beams, State) ->
-    NewState = process_if_foregn_reload_enabled(
-        fun() ->
-            %% Create a list of beam file lastmod times...
-            F = fun(X) ->
-                Beam = code:which(X),
-                LastMod = filelib:last_modified(Beam),
-                {X, LastMod}
-            end,
-            NewBeamLastMod = lists:usort([F(X) || X <- State#state.modules]),
-        
-            %% Compare to previous results, if there are changes, then reload
-            %% the beam...
-            process_beam_lastmod(State#state.beam_lastmod, NewBeamLastMod, State#state.patching),
-        
-            %% Schedule the next interval...
-            NewTimers = schedule_cast(compare_beams, 2000, State#state.timers),
-        
-            %% Return with updated beam lastmod...
-            State#state { beam_lastmod=NewBeamLastMod, timers=NewTimers }
-        end, State),
+    %% Create a list of beam file lastmod times...
+    F = fun(X) ->
+        Beam = code:which(X),
+        LastMod = filelib:last_modified(Beam),
+        {X, LastMod}
+    end,
+    NewBeamLastMod = lists:usort([F(X) || X <- State#state.modules]),
+
+    %% Compare to previous results, if there are changes, then reload
+    %% the beam...
+    process_beam_lastmod(State#state.beam_lastmod, NewBeamLastMod, State#state.patching),
+
+    %% Schedule the next interval...
+    NewTimers = schedule_cast(compare_beams, 2000, State#state.timers),
+
+    %% Return with updated beam lastmod...
+    NewState = State#state { beam_lastmod=NewBeamLastMod, timers=NewTimers },
     {noreply, NewState};
 
-handle_cast(compare_src_files, State) ->
+handle_cast(compare_src_files, State = #state{modules = CurrMods}) ->
     %% Create a list of file lastmod times...
     F = fun(X) ->
         LastMod = filelib:last_modified(X),
@@ -210,31 +207,31 @@ handle_cast(compare_src_files, State) ->
     NewSrcFileLastMod = lists:usort([F(X) || X <- State#state.src_files]),
 
     %% Compare to previous results, if there are changes, then recompile the file...
-    process_src_file_lastmod(State#state.src_file_lastmod, NewSrcFileLastMod, State#state.patching),
+    Compiled = process_src_file_lastmod(State#state.src_file_lastmod, NewSrcFileLastMod, State#state.patching, []),
 
     %% Schedule the next interval...
     NewTimers = schedule_cast(compare_src_files, 1000, State#state.timers),
 
     %% Return with updated src_file lastmod...
-    NewState = State#state { src_file_lastmod=NewSrcFileLastMod, timers=NewTimers },
+    NewState = State#state{ src_file_lastmod=NewSrcFileLastMod, timers=NewTimers, modules = lists:usort(Compiled ++  CurrMods)},
     {noreply, NewState};
 
-handle_cast(compare_hrl_files, State) ->
+handle_cast(compare_hrl_files, State = #state{hrl_files = HrlFiles, modules = CurrentMods, src_files = SrcFiles}) ->
     %% Create a list of file lastmod times...
     F = fun(X) ->
         LastMod = filelib:last_modified(X),
         {X, LastMod}
     end,
-    NewHrlFileLastMod = lists:usort([F(X) || X <- State#state.hrl_files]),
+    NewHrlFileLastMod = lists:usort([F(X) || X <- HrlFiles]),
 
     %% Compare to previous results, if there are changes, then recompile src files that depends
-    process_hrl_file_lastmod(State#state.hrl_file_lastmod, NewHrlFileLastMod, State#state.src_files, State#state.patching),
+    Compiled = process_hrl_file_lastmod(State#state.hrl_file_lastmod, NewHrlFileLastMod, SrcFiles, State#state.patching, []),
 
     %% Schedule the next interval...
     NewTimers = schedule_cast(compare_hrl_files, 2000, State#state.timers),
 
     %% Return with updated hrl_file lastmod...
-    NewState = State#state { hrl_file_lastmod=NewHrlFileLastMod, timers=NewTimers },
+    NewState = State#state { hrl_file_lastmod = NewHrlFileLastMod, timers=NewTimers, modules = lists:usort(Compiled ++ CurrentMods) },
     {noreply, NewState};
 
 handle_cast(info, State) ->
@@ -423,37 +420,43 @@ load_module_on_all_nodes(Module) ->
     [F(X) || X <- Nodes],
     {ok, NumNodes}.
 
-process_src_file_lastmod([{File, LastMod}|T1], [{File, LastMod}|T2], EnablePatching) ->
+process_src_file_lastmod([{File, LastMod}|T1], [{File, LastMod}|T2], EnablePatching, ComopiledModules) ->
     %% Beam hasn't changed, do nothing...
-    process_src_file_lastmod(T1, T2, EnablePatching);
-process_src_file_lastmod([{File, _}|T1], [{File, _}|T2], EnablePatching) ->
+    process_src_file_lastmod(T1, T2, EnablePatching, ComopiledModules);
+process_src_file_lastmod([{File, _}|T1], [{File, _}|T2], EnablePatching, ComopiledModules) ->
     %% File has changed, recompile...
-    recompile_src_file(File, EnablePatching),
-    process_src_file_lastmod(T1, T2, EnablePatching);
-process_src_file_lastmod([{File1, LastMod1}|T1], [{File2, LastMod2}|T2], EnablePatching) ->
+    NewCompiledModules = case recompile_src_file(File, EnablePatching) of
+        {ok, Module, [], _Warnings} ->
+            [Module | ComopiledModules];
+        {ok, _Module, _Errors, _Warnings} ->
+            ComopiledModules
+    end,
+    process_src_file_lastmod(T1, T2, EnablePatching, NewCompiledModules);
+process_src_file_lastmod([{File1, LastMod1}|T1], [{File2, LastMod2}|T2], EnablePatching, ComopiledModules) ->
     %% Lists are different...
     case File1 < File2 of
         true ->
             %% File was removed, do nothing...
-            process_src_file_lastmod(T1, [{File2, LastMod2}|T2], EnablePatching);
+            process_src_file_lastmod(T1, [{File2, LastMod2}|T2], EnablePatching, ComopiledModules);
         false ->
-            maybe_recompile_src_file(File2, LastMod2, EnablePatching),
-            process_src_file_lastmod([{File1, LastMod1}|T1], T2, EnablePatching)
+            {ok, Modules} = maybe_recompile_src_file(File2, LastMod2, EnablePatching),
+            process_src_file_lastmod([{File1, LastMod1}|T1], T2, EnablePatching, Modules ++ ComopiledModules)
     end;
-process_src_file_lastmod([], [{File, LastMod}|T2], EnablePatching) ->
-    maybe_recompile_src_file(File, LastMod, EnablePatching),
-    process_src_file_lastmod([], T2, EnablePatching);
-process_src_file_lastmod([], [], _) ->
+process_src_file_lastmod([], [{File, LastMod}|T2], EnablePatching, CompiledModules) ->
+    {ok, Modules} = maybe_recompile_src_file(File, LastMod, EnablePatching),
+    process_src_file_lastmod([], T2, EnablePatching, Modules ++ CompiledModules);
+process_src_file_lastmod([], [], _, CompiledModules) ->
     %% Done.
-    ok;
-process_src_file_lastmod(undefined, _Other, _) ->
+    CompiledModules;
+process_src_file_lastmod(undefined, _Other, _, _) ->
     %% First load, do nothing.
-    ok.
+    [].
 
 
 erlydtl_compile(SrcFile, Options) ->
     erlydtl:compile(SrcFile, list_to_atom(lists:flatten(filename:basename(SrcFile, ".dtl") ++ "_dtl")), Options).
 
+-spec maybe_recompile_src_file(file:filename(), timestamp(), boolean()) -> {ok, [CompiledModules :: module()]}.
 maybe_recompile_src_file(File, LastMod, EnablePatching) ->
     Module = list_to_atom(filename:basename(File, ".erl")),
     case code:which(Module) of
@@ -461,19 +464,24 @@ maybe_recompile_src_file(File, LastMod, EnablePatching) ->
             %% check with beam file
             case filelib:last_modified(BeamFile) of
                 BeamLastMod when LastMod > BeamLastMod ->
-                    recompile_src_file(File, EnablePatching);
+                    case recompile_src_file(File, EnablePatching) of
+                        {ok, Module, [], _Warnings} ->
+                            {ok, [Module]};
+                        {ok, _Module, _Errors, _Warnings} ->
+                            {ok, []}
+                    end;
                 _ ->
-                    ok
+                    {ok, []}
             end;
         _ ->
             %% File is new, recompile...
             case recompile_src_file(File, EnablePatching) of
                 {ok, Module, [], _Warnings} ->
-                    fire_onnew([Module]);
+                    fire_onnew([Module]),
+                    {ok, [Module]};
                 {ok, _Module, _Errors, _Warnings} ->
-                    ok %% <sad face picture>
-            end,
-            ok
+                    {ok, []}
+            end
     end.
 
 determine_compile_fun_and_module_name(SrcFile) ->
@@ -492,6 +500,7 @@ get_object_code(Module) ->
         _ -> undefined
     end.
 
+-spec recompile_src_file(file:filename(), boolean()) -> {ok, Module :: module(), Errors :: list(), Warnings :: list()}.
 recompile_src_file(SrcFile, _EnablePatching) ->
     %% Get the module, src dir, and options...
     {ok, SrcDir} = sync_utils:get_src_dir(SrcFile),
@@ -542,7 +551,8 @@ recompile_src_file(SrcFile, _EnablePatching) ->
 
         undefined ->
             Msg = io_lib:format("Unable to determine options for ~p", [SrcFile]),
-            sync_notify:log_errors(Msg)
+            sync_notify:log_errors(Msg),
+            {ok, undefined, [{error, "Can't get properties"}], []}
     end.
 
 
@@ -604,15 +614,15 @@ growl_format_errors(Errors, Warnings) ->
     end,
     [F(X) || X <- Everything].
 
-process_hrl_file_lastmod([{File, LastMod}|T1], [{File, LastMod}|T2], SrcFiles, Patching) ->
+process_hrl_file_lastmod([{File, LastMod}|T1], [{File, LastMod}|T2], SrcFiles, Patching, CompiledModules) ->
     %% Hrl hasn't changed, do nothing...
-    process_hrl_file_lastmod(T1, T2, SrcFiles, Patching);
-process_hrl_file_lastmod([{File, _}|T1], [{File, _}|T2], SrcFiles, Patching) ->
+    process_hrl_file_lastmod(T1, T2, SrcFiles, Patching, CompiledModules);
+process_hrl_file_lastmod([{File, _}|T1], [{File, _}|T2], SrcFiles, Patching, CompiledModules) ->
     %% File has changed, recompile...
     WhoInclude = who_include(File, SrcFiles),
-    [recompile_src_file(SrcFile, Patching) || SrcFile <- WhoInclude],
-    process_hrl_file_lastmod(T1, T2, SrcFiles, Patching);
-process_hrl_file_lastmod([{File1, LastMod1}|T1], [{File2, LastMod2}|T2], SrcFiles, Patching) ->
+    Modules = lists:flatmap(fun(SrcFile) -> recompile_src_file(SrcFile, Patching) end, WhoInclude),
+    process_hrl_file_lastmod(T1, T2, SrcFiles, Patching, Modules ++ CompiledModules);
+process_hrl_file_lastmod([{File1, LastMod1}|T1], [{File2, LastMod2}|T2], SrcFiles, Patching, CompiledModules) ->
     %% Lists are different...
     case File1 < File2 of
         true ->
@@ -620,28 +630,28 @@ process_hrl_file_lastmod([{File1, LastMod1}|T1], [{File2, LastMod2}|T2], SrcFile
             WhoInclude = who_include(File1, SrcFiles),
             case WhoInclude of
                 [] -> ok;
-                _ -> io:format(
+                _ -> sync_notify:log_warnings(io_lib:format(
                         "Warning. Deleted ~p file included in existing src files: ~p",
-                        [filename:basename(File1), lists:map(fun(File) -> filename:basename(File) end, WhoInclude)])
+                        [filename:basename(File1), lists:map(fun(File) -> filename:basename(File) end, WhoInclude)]))
             end,
-            process_hrl_file_lastmod(T1, [{File2, LastMod2}|T2], SrcFiles, Patching);
+            process_hrl_file_lastmod(T1, [{File2, LastMod2}|T2], SrcFiles, Patching, CompiledModules);
         false ->
             %% File is new, look for src that include it
             WhoInclude = who_include(File2, SrcFiles),
-            [maybe_recompile_src_file(SrcFile, LastMod2, Patching) || SrcFile <- WhoInclude],
-            process_hrl_file_lastmod([{File1, LastMod1}|T1], T2, SrcFiles, Patching)
+            Modules = lists:flatmap(fun(SrcFile) -> maybe_recompile_src_file(SrcFile, LastMod2, Patching) end, WhoInclude),
+            process_hrl_file_lastmod([{File1, LastMod1}|T1], T2, SrcFiles, Patching, Modules ++ CompiledModules)
     end;
-process_hrl_file_lastmod([], [{File, LastMod}|T2], SrcFiles, Patching) ->
+process_hrl_file_lastmod([], [{File, LastMod}|T2], SrcFiles, Patching, CompiledModules) ->
     %% File is new, look for src that include it
     WhoInclude = who_include(File, SrcFiles),
-    [maybe_recompile_src_file(SrcFile, LastMod, Patching) || SrcFile <- WhoInclude],
-    process_hrl_file_lastmod([], T2, SrcFiles, Patching);
-process_hrl_file_lastmod([], [], _, _) ->
+    Modules = lists:flatmap(fun(SrcFile) -> maybe_recompile_src_file(SrcFile, LastMod, Patching) end, WhoInclude),
+    process_hrl_file_lastmod([], T2, SrcFiles, Patching, Modules ++ CompiledModules);
+process_hrl_file_lastmod([], [], _, _, Modules) ->
     %% Done
-    ok;
-process_hrl_file_lastmod(undefined, _Other, _,  _) ->
+    Modules;
+process_hrl_file_lastmod(undefined, _Other, _,  _, _) ->
     %% First load, do nothing
-    ok.
+    [].
 
 who_include(HrlFile, SrcFiles) ->
     HrlFileBaseName = filename:basename(HrlFile),
